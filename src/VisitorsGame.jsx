@@ -580,7 +580,9 @@ function useAudioBank(musicVolume, sfxVolume) {
 
   const play = useCallback((key, opts = {}) => {
     if (mutedRef.current) { console.log("[audio] play skipped (muted):", key); return; }
-    const a = banksRef.current[key];
+    const bank = banksRef.current;
+    if (!bank) { console.warn("[audio] play called but bank is null:", key); return; }
+    const a = bank[key];
     if (!a) { console.warn("[audio] play missing bank entry:", key); return; }
     try {
       if (opts.restart !== false && !a.loop) a.currentTime = 0;
@@ -590,13 +592,17 @@ function useAudioBank(musicVolume, sfxVolume) {
   }, []);
 
   const stop = useCallback((key) => {
-    const a = banksRef.current[key];
+    const bank = banksRef.current;
+    if (!bank) return;
+    const a = bank[key];
     if (!a) return;
     try { a.pause(); a.currentTime = 0; } catch (e) {/* ignore */}
   }, []);
 
   const pause = useCallback((key) => {
-    const a = banksRef.current[key];
+    const bank = banksRef.current;
+    if (!bank) return;
+    const a = bank[key];
     if (!a) return;
     try { a.pause(); } catch (e) {/* ignore */}
   }, []);
@@ -604,16 +610,17 @@ function useAudioBank(musicVolume, sfxVolume) {
   const setMuted = useCallback((muted) => {
     mutedRef.current = muted;
     if (muted) {
-      Object.values(banksRef.current).forEach(a => { try { a.pause(); } catch (e) {} });
+      const bank = banksRef.current;
+      if (bank) Object.values(bank).forEach(a => { try { a.pause(); } catch (e) {} });
     }
   }, []);
 
   // Get the underlying HTMLAudioElement for a key (for state inspection)
   const getElement = useCallback((key) => banksRef.current?.[key] || null, []);
 
-  // cleanup on unmount: pause everything. Don't set src="" — that would leave the bank in
-  // a broken state if React (StrictMode in dev) immediately re-mounts the component.
-  // We also clear banksRef so that the next mount's needsBuild check triggers a fresh bank.
+  // cleanup on unmount: pause everything. Do NOT clear banksRef or set src="" — that would
+  // break audio.play() on any subsequent invocation (StrictMode in dev re-mounts the
+  // component, which would otherwise leave the bank pointing at null/empty audios).
   useEffect(() => {
     return () => {
       const cur = banksRef.current;
@@ -622,7 +629,6 @@ function useAudioBank(musicVolume, sfxVolume) {
           try { a.pause(); } catch (e) {}
         });
       }
-      banksRef.current = null;
     };
   }, []);
 
