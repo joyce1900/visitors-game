@@ -421,7 +421,17 @@ const PettingCat = ({ mood, color, earColor, eyeColor, warning, scratched, tailW
   const tailAngle = tailWag ? Math.sin(Date.now() / 80) * 20 : 0;
 
   return (
-    <svg viewBox="0 0 220 180" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style={{ shapeRendering: "crispEdges", maxHeight: "100%", display: "block" }}>
+    <svg viewBox="0 0 220 180" width="100%" height="100%" preserveAspectRatio="xMidYMid meet"
+         style={{
+           shapeRendering: "crispEdges", maxHeight: "100%", display: "block",
+           // pointer-events: none lets the cursor fall through this SVG to the
+           // parent div, which has the pet-hand cursor set. Without this, SVG
+           // child shapes (eyes/ears/circles) cause browsers to fall back to the
+           // system "pointer" cursor when hovered (Entry 29). The petting
+           // mouse-move handler is attached to the parent div, not the SVG, so
+           // disabling SVG pointer events doesn't break interactivity.
+           pointerEvents: "none",
+         }}>
       <path d={`M168 140 Q${195+tailAngle*0.6} 115 ${190+tailAngle} 85`} stroke={color} strokeWidth="8" fill="none" strokeLinecap="round"/>
       <ellipse cx="100" cy="155" rx="75" ry="25" fill={color} opacity="0.6"/>
       <polygon points={earLeft} fill={color}/><polygon points={earRight} fill={color}/>
@@ -1527,6 +1537,7 @@ export default function CatPettingGame() {
                   transform: catEntering ? "scale(0.7)" : isPetting && !warningActive ? "scale(1.03)" : "scale(1)",
                   opacity: catEntering ? 0 : 1,
                   width: "70%", maxWidth: "60%",
+                  cursor: `url('${CURSOR_PET_URL}') ${CURSOR_PET_HOTSPOT.x} ${CURSOR_PET_HOTSPOT.y}, auto`,
                 }}>
                   <PettingCat
                     mood={petGameState === "scratched" ? "annoyed" : mood}
