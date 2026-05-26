@@ -69,7 +69,8 @@ const REST_DURATION_MIN = 25000; // satisfied cats wait at least this long befor
 const REST_DURATION_MAX = 60000; // ...and at most this long
 const PICKUP_CHANCE_INTERVAL = 35000; // every ~35s a satisfied cat may be picked up
 const DOOR_COOLDOWN_MS = 6000; // minimum time between door events so they don't overlap
-const DOOR_EVENT_MS = 2200; // duration of a door-open animation (hand reaches in)
+// (DOOR_EVENT_MS removed in Entry 32 — the doorway animation was removed in favor
+//  of an instant "chime + cat appears / disappears" effect.)
 const CAT_WALK_SPEED = 0.55; // tiles per second when a cat wanders or walks to/from the door (lowered from 0.7 in Entry 26 for a calmer, more idle feel)
 
 // ===== ISOMETRIC HELPERS =====
@@ -343,52 +344,9 @@ const drawCatIcon = (ctx, x, y, kind, time, icons) => {
 };
 
 // (drawPlayer removed in Entry 26 — the game is click-driven, no player avatar.)
-
-// Door hand animation - a hand emerges from the doorway briefly when the door opens.
-// t is normalized time from 0 (door starts opening) to 1 (event complete).
-// The hand reaches in (0..0.3), holds (0.3..0.7), retracts (0.7..1).
-const drawDoorHand = (ctx, t) => {
-  ctx.imageSmoothingEnabled = false;
-  // Door position in screen coords (matches the door drawn in drawRoom)
-  // The door on the back wall is anchored at tileToScreen(ROOM_TILES_X * 0.85, 0).
-  const doorAnchor = (() => {
-    const TX = ROOM_TILES_X * 0.85;
-    return {
-      x: (TX - 0) * (TILE_W / 2) + ROOM_W / 2,
-      y: 0 + ROOM_OFFSET_Y,
-    };
-  })();
-
-  // Hand emerges downward from the door (back wall). At t=0, hand is hidden inside the door.
-  // At peak (t=0.5), hand is at the doorway floor. Then retracts.
-  let extension;
-  if (t < 0.3) extension = t / 0.3;
-  else if (t < 0.7) extension = 1;
-  else extension = (1 - t) / 0.3;
-  extension = Math.max(0, Math.min(1, extension));
-
-  // Arm/hand reaches from door down toward (slightly in front of) the doorway.
-  const handStartY = doorAnchor.y - 30; // up inside the door frame
-  const handEndY = doorAnchor.y + 2;    // just past the doorway onto the floor area
-  const handY = handStartY + (handEndY - handStartY) * extension;
-  const handX = doorAnchor.x - 1; // roughly center of door
-
-  // dark "open door" rectangle to show the door is ajar
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(doorAnchor.x - 5, doorAnchor.y - 38, 10, 38);
-
-  // Sleeve/arm (a dark vertical bar extending from inside the door down to the hand)
-  ctx.fillStyle = "#3E2A1E";
-  ctx.fillRect(handX - 2, handStartY, 4, handY - handStartY);
-  // cuff highlight
-  ctx.fillStyle = "#5D4037";
-  ctx.fillRect(handX - 2, handY - 3, 4, 2);
-  // hand (skin-colored pixel block)
-  ctx.fillStyle = "#FFCCBC";
-  ctx.fillRect(handX - 2, handY - 1, 4, 4);
-  ctx.fillRect(handX - 3, handY, 1, 2);
-  ctx.fillRect(handX + 2, handY, 1, 2);
-};
+// (drawDoorHand removed in Entry 32 — the door-hand animation was removed in favor
+//  of an instant "chime + cat appears/disappears" effect. The chime audio + 6-second
+//  cooldown between door events remain; only the visual hand has gone away.)
 
 // ====== PETTING VIEW (the popup) ======
 
@@ -666,7 +624,7 @@ export default function CatPettingGame() {
   // the WASD-player version: now that the game is click-driven (Entry 26), highlight is
   // tied to mouse position, not a moving avatar.
   const [hoveredCatIdx, setHoveredCatIdx] = useState(null);
-  const [doorEvent, setDoorEvent] = useState(null); // null or { action: "dropoff"|"pickup", payload, startedAt, durationMs }
+  // (doorEvent state removed in Entry 32 — door events are now instantaneous, see triggerDoorEvent.)
   const [muted, setMutedState] = useState(false);
 
   // ---- ART ASSETS ----
@@ -896,21 +854,46 @@ export default function CatPettingGame() {
   }, [pickRandomSpot]);
 
   // Trigger a door event. action is "dropoff" or "pickup".
-  // For dropoff, payload is the catData (a personality).
+  // For dropoff, payload is the catData (a personality) — a new cat is spawned at the doorway.
   // For pickup, payload is the cat id to be picked up — that cat must already be at the door.
+  //
+  // Entry 32: the previous version queued a 2.2s animated "hand reaches in through
+  // the door" event before actually adding/removing the cat. The animation is gone;
+  // everything now happens immediately when this is called: chime plays, cat appears
+  // (dropoff) or disappears (pickup) the same frame. The doorBusyRef + cooldown
+  // tracking is kept so two doorway events can't overlap.
   const triggerDoorEvent = useCallback((action, payload) => {
     if (doorBusyRef.current) return;
     doorBusyRef.current = true;
-    setDoorEvent({
-      action,
-      payload,
-      startedAt: Date.now(),
-      durationMs: DOOR_EVENT_MS,
-    });
-  }, []);
+
+    if (action === "dropoff") {
+      // Spawn the new cat right at the doorway, then immediately start it walking inward.
+      setCats(prev => {
+        const target = pickRandomSpot();
+        const newCat = makeCat(payload, DOOR_X, DOOR_Y, "arriving");
+        newCat.targetX = target.x;
+        newCat.targetY = target.y;
+        return [...prev, newCat];
+      });
+    } else if (action === "pickup") {
+      // Remove the cat with the matching id (it should be at/near the door).
+      setCats(prev => prev.filter(c => c.id !== payload));
+    }
+
+    audio.play("chime");
+    lastDoorActionAtRef.current = Date.now();
+    // Release the busy flag on the next tick so two door events can't fire in the
+    // same React update; cooldown then enforces longer spacing.
+    setTimeout(() => { doorBusyRef.current = false; }, 0);
+  }, [pickRandomSpot, makeCat, audio]);
 
   // Decide whether to start a new cat arriving (open the door + drop a new cat at the doorway).
   const maybeSpawnCat = useCallback(() => {
+    // We choose the personality inside a "peek" via setCats(prev => prev) so we
+    // see the current cat list, but we DO NOT mutate state from inside. The actual
+    // spawn happens via triggerDoorEvent on the next tick — this avoids nesting
+    // setCats inside setCats (which would happen if triggerDoorEvent ran synchronously).
+    let personalityToSpawn = null;
     setCats(prev => {
       const now = Date.now();
       if (doorBusyRef.current) return prev;
@@ -925,12 +908,13 @@ export default function CatPettingGame() {
       const presentTypes = new Set(prev.map(c => c.catData.type));
       const available = CAT_PERSONALITIES.filter(p => !presentTypes.has(p.type));
       const pool = available.length > 0 ? available : CAT_PERSONALITIES;
-      const personality = pool[Math.floor(Math.random() * pool.length)];
+      personalityToSpawn = pool[Math.floor(Math.random() * pool.length)];
 
-      // Trigger the door animation; the cat is actually added when the door opens
-      triggerDoorEvent("dropoff", personality);
-      return prev;
+      return prev; // no state change here; trigger fires on next tick below
     });
+    if (personalityToSpawn) {
+      setTimeout(() => triggerDoorEvent("dropoff", personalityToSpawn), 0);
+    }
   }, [triggerDoorEvent]);
 
   // Send a resting cat toward the door so an owner can pick it up.
@@ -1004,34 +988,8 @@ export default function CatPettingGame() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---- DOOR EVENT DRIVER ----
-  // When the door event completes:
-  // - dropoff: the cat appears at the doorway and starts walking inward
-  // - pickup: the cat at the door is removed
-  useEffect(() => {
-    if (!doorEvent) return;
-    const remaining = doorEvent.startedAt + doorEvent.durationMs - Date.now();
-    const timeout = setTimeout(() => {
-      if (doorEvent.action === "dropoff") {
-        // Add the new cat at the doorway, walking toward a random spot
-        setCats(prev => {
-          const target = pickRandomSpot();
-          const newCat = makeCat(doorEvent.payload, DOOR_X, DOOR_Y, "arriving");
-          newCat.targetX = target.x;
-          newCat.targetY = target.y;
-          return [...prev, newCat];
-        });
-      } else if (doorEvent.action === "pickup") {
-        // Remove the cat with the matching id (it should be at/near the door)
-        setCats(prev => prev.filter(c => c.id !== doorEvent.payload));
-      }
-      audio.play("chime");
-      lastDoorActionAtRef.current = Date.now();
-      doorBusyRef.current = false;
-      setDoorEvent(null);
-    }, Math.max(0, remaining));
-    return () => clearTimeout(timeout);
-  }, [doorEvent, pickRandomSpot, makeCat, audio]);
+  // (DOOR EVENT DRIVER removed in Entry 32 — door events are no longer scheduled;
+  //  spawn/pickup happen synchronously inside triggerDoorEvent.)
 
   // ---- CAT MOVEMENT LOOP ----
   // Each cat walks toward its targetX/targetY. When it reaches the target:
@@ -1098,11 +1056,17 @@ export default function CatPettingGame() {
               };
             }
             if (c.state === "leaving") {
-              // Reached the door — request a pickup door event if not already running
+              // Reached the door — request a pickup door event if not already running.
+              // We schedule the trigger for the next tick (setTimeout 0) rather than
+              // calling it inline, because triggerDoorEvent itself calls setCats
+              // (to filter out the picked-up cat), and React does not like
+              // setCats-inside-setCats. The next-tick scheduling keeps both state
+              // updates clean while still feeling instant to the player.
               if (!doorBusyRef.current) {
-                triggerDoorEvent("pickup", c.id);
+                const idToPick = c.id;
+                setTimeout(() => triggerDoorEvent("pickup", idToPick), 0);
               }
-              // Cat stays at door waiting for the pickup event to complete
+              // Cat stays at door waiting for the pickup event to fire.
               return c.x !== newX || c.y !== newY || newFacing !== c.facing
                 ? { ...c, x: newX, y: newY, facing: newFacing }
                 : c;
@@ -1194,17 +1158,13 @@ export default function CatPettingGame() {
       });
       catHitBoxesRef.current = newBoxes;
 
-      // Door event overlay: a hand reaches in briefly when the door opens
-      if (doorEvent) {
-        const t = Math.min(1, Math.max(0, (Date.now() - doorEvent.startedAt) / doorEvent.durationMs));
-        drawDoorHand(ctx, t);
-      }
+      // (door-hand overlay removed in Entry 32 — doorway events are now instant.)
 
       raf = requestAnimationFrame(render);
     };
     raf = requestAnimationFrame(render);
     return () => cancelAnimationFrame(raf);
-  }, [cats, doorEvent]);
+  }, [cats]);
 
   // ---- PETTING LOGIC ----
   const clearTimers = useCallback(() => {
